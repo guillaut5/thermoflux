@@ -1,0 +1,8 @@
+# Les simulateurs publient seulement ; l'ingestion lit seulement.
+# Tout ce qui n'est pas autorise ici est refuse.
+
+user simulateur
+topic write usine/machines/+/temperature
+
+user ingestion
+topic read usine/machines/+/temperature

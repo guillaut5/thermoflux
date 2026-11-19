@@ -1,0 +1,23 @@
+# Secrets : jamais dans Git
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Editeur / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Terraform (etape 7)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
