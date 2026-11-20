@@ -13,7 +13,7 @@ Le cadrage complet (objectifs, spécifications, étapes) est dans [IA-MD/01-PROJ
 | Étape | Contenu | État |
 |---|---|---|
 | 1 | Code Python en local | simulateur ✅, ingestion ✅, migrations ✅, web ✅ (reste à valider dans un navigateur, voir ci-dessous) |
-| 2 | `docker compose` complet sur la Dedibox | à faire |
+| 2 | `docker compose` complet sur la Dedibox | compose écrit et testé sur Windows ✅ (10 machines, ordre de démarrage, historique conservé après `down`) ; **à valider sur la Dedibox** |
 | 3 | Kubernetes (k3s) | à faire |
 | 4 | k3d multi-nœuds | à faire |
 | 5 | Observabilité | à faire |
@@ -46,6 +46,10 @@ Chaque choix est noté avec ce qu'il coûte et à quelle échelle il devient uti
 
 **MQTT plutôt que Kafka.** MQTT est léger et fait pour l'IoT, et 10 machines à 1 mesure / 5 s font 2 messages/s. Kafka ne se justifierait qu'à des volumes très supérieurs, ou pour rejouer l'historique des messages. Contrepartie : Mosquitto ne conserve pas les messages si personne n'écoute.
 
+**Deux façons de lancer la chaîne, gardées toutes les deux.** La voie *manuelle* (`docker build` et `docker run`, une commande par brique) montre chaque variable, chaque dépendance et l'ordre de démarrage ; la voie *Compose* (`docker compose up -d --build`) l'écrit une fois pour toutes dans [docker-compose.yml](docker-compose.yml) : réseau et volume créés, `depends_on` avec attente de santé, job `migrate` avant les applications, et 10 simulateurs obtenus par une ancre YAML (une image, 10 conteneurs). Un seul fichier compose sert aux deux : `docker compose up -d --wait postgres mosquitto` ne lance que le socle, et le reste se fait à la main. Compromis : les deux voies partagent réseau, volume et ports, donc **une seule à la fois** (deux ingestions inséreraient chaque mesure en double). Les 10 simulateurs sont 10 services de deux lignes plutôt qu'une boucle : Compose n'a pas de boucle, et c'est un des endroits où Kubernetes (StatefulSet à 10 réplicas) sera plus simple.
+
+**Un healthcheck Mosquitto écrit à la main.** L'image officielle n'en a pas, or `depends_on: service_healthy` en a besoin. Le test se connecte avec le compte `simulateur` : il prouve que le broker écoute **et** que le fichier de mots de passe a été généré.
+
 **Une file entre MQTT et Postgres dans l'ingestion.** Le callback MQTT valide le message et le met dans une file bornée (10 000). Un thread d'écriture l'insère et se reconnecte à Postgres tout seul. Vérifié : en redémarrant Postgres, l'ingestion se reconnecte en ~2 s et aucune mesure n'est perdue (la plus grande pause entre deux mesures reste l'intervalle normal de 2 s). Contrepartie : la file est en mémoire, donc un arrêt brutal de l'ingestion pendant une panne de Postgres perd ce qu'elle contient. Au-delà de 10 000 mesures en attente, les nouvelles sont perdues et loguées. Une vraie garantie demanderait des sessions MQTT persistantes ou un autre mécanisme de reprise.
 
 **Un `INSERT` par message.** Simple et lisible, suffisant à ce volume (172 800 lignes/jour). L'insertion par lots est prévue comme exercice, avec mesure du gain.
@@ -76,7 +80,7 @@ Une image officielle (`postgres`, `eclipse-mosquitto`) n'est pas une boîte noir
 
 | Ce que j'aurais fait à la main | Ce que l'image fait à ma place | Où le voir dans le dépôt |
 |---|---|---|
-| Installer le paquet, créer le rôle et la base avec `createuser` / `createdb` | Les crée au **premier démarrage** à partir de `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | [docker-compose.dev.yml](docker-compose.dev.yml) |
+| Installer le paquet, créer le rôle et la base avec `createuser` / `createdb` | Les crée au **premier démarrage** à partir de `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | [docker-compose.yml](docker-compose.yml) |
 | Choisir un dossier de données, gérer ses droits | Fixe le dossier de données (`/var/lib/postgresql/data`) pour qu'on y monte **un volume** | volume nommé `pgdata` |
 | Éditer `/etc/postgresql/.../postgresql.conf` | Garde la config **dans le dossier de données** ; on la surcharge par paramètres de commande ou fichier monté | `SHOW config_file;` dans `psql` |
 | Configurer un service systemd et un fichier de log | Lance **un seul processus au premier plan** et laisse les logs sur stdout | `docker logs` |
@@ -96,9 +100,11 @@ Pour aborder une image inconnue : lire la section « Environment Variables » et
 
 ```
 thermoflux/
-├── README.md, INSTALL.md
+├── README.md
 ├── .env.example               # variables attendues (le vrai .env n'est pas commité)
-├── docker-compose.dev.yml     # socle de dev : Mosquitto + Postgres
+├── docker-compose.yml         # toute la chaîne (ou seulement le socle Mosquitto + Postgres)
+├── INSTALL.md                 # guide détaillé ; INSTALL-RAPIDE.md : la séquence en 2 pages
+├── DOCKER-MEMO.md             # aide-mémoire des commandes Docker
 ├── simulateur/                # Dockerfile, requirements.txt, simulateur.py
 ├── ingestion/                 # Dockerfile, requirements.txt, ingestion.py
 ├── web/                       # Dockerfile, app.py, auth.py, hash_password.py, templates/

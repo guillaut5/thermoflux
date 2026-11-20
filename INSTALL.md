@@ -1,6 +1,15 @@
 # Installation et lancement
 
-Ce guide couvre l'état actuel du projet (étape 1 : simulateur, Mosquitto, Postgres, migrations, ingestion). Le `docker-compose.yml` complet, qui lance tout d'une commande, arrive à l'étape 2.
+Ce guide détaille toute la séquence. Pour la voir sur une ou deux pages : [INSTALL-RAPIDE.md](INSTALL-RAPIDE.md). Pour les commandes Docker de base : [DOCKER-MEMO.md](DOCKER-MEMO.md).
+
+**Deux façons de lancer la chaîne, qui coexistent :**
+
+| Voie | Principe | Pour quoi faire |
+|---|---|---|
+| **Manuelle** (sections 3 à 9) | `docker compose` ne lance que Mosquitto et Postgres ; le reste à la main avec `docker build` et `docker run` | comprendre chaque brique, ses variables et son ordre de démarrage |
+| **Compose** (section 11) | `docker compose up -d --build` lance tout, dans le bon ordre | l'usage courant, et le déploiement |
+
+Les deux utilisent le même fichier [docker-compose.yml](docker-compose.yml), le même réseau, les mêmes noms d'images et le même volume Postgres. On peut passer de l'une à l'autre sans perdre l'historique, mais **pas les faire tourner en même temps** (voir la section 11).
 
 Le développement se fait sur Windows avec Docker Desktop. Le même code se lance ensuite sur la Dedibox (Linux), car tout tourne dans des conteneurs.
 
@@ -41,7 +50,7 @@ cp .env.example .env
 
 Éditer `.env` et remplacer **les trois mots de passe** (`change_me`, `change_me_too`) par de vrais mots de passe. Le fichier `.env` est ignoré par Git : ne le commite jamais. `WEB_PASSWORD_HASH` et `SECRET_KEY` restent vides pour l'instant : ils se génèrent à l'étape 8.
 
-> **Fais ces modifications avant la première étape 3.** Postgres ne lit `POSTGRES_PASSWORD` qu'à l'initialisation du volume : si tu changes le mot de passe dans `.env` après, la base garde l'ancien et les services qui lisent le `.env` n'arrivent plus à s'y connecter (« password authentication failed »). Dans ce cas, soit tu remets l'ancien mot de passe, soit tu repars d'une base vide avec `docker compose -f docker-compose.dev.yml down -v`.
+> **Fais ces modifications avant la première étape 3.** Postgres ne lit `POSTGRES_PASSWORD` qu'à l'initialisation du volume : si tu changes le mot de passe dans `.env` après, la base garde l'ancien et les services qui lisent le `.env` n'arrivent plus à s'y connecter (« password authentication failed »). Dans ce cas, soit tu remets l'ancien mot de passe, soit tu repars d'une base vide avec `docker compose down -v`.
 
 | Variable | Rôle |
 |---|---|
@@ -59,12 +68,12 @@ Les ports hôte par défaut ne sont pas 5432 et 1883 : sur le PC de développeme
 ## 3. Lancer le socle (Mosquitto + Postgres)
 
 ```
-docker compose -f docker-compose.dev.yml up -d --wait
+docker compose up -d --wait postgres mosquitto
 ```
 
-`--wait` rend la main quand les deux services sont sains. Les ports ne sont publiés que sur `127.0.0.1` : rien n'est exposé sur le réseau.
+On nomme les deux services : seuls Postgres et Mosquitto démarrent, le reste du fichier est ignoré. `--wait` rend la main quand ils sont sains (Postgres via `pg_isready`, Mosquitto via une connexion avec le compte `simulateur`). Les ports ne sont publiés que sur `127.0.0.1` : rien n'est exposé sur le réseau.
 
-**Noms des conteneurs.** Compose les nomme `<projet>-<service>-<numéro>`. Le projet est fixé à `thermoflux` dans le fichier compose, donc les noms sont `thermoflux-mosquitto-1` et `thermoflux-postgres-1`, identiques sur Windows et sur la Dedibox. `docker ps` les affiche. Les commandes de ce guide utilisent `docker exec <conteneur>` ; avec Compose, l'équivalent est `docker compose -f docker-compose.dev.yml exec <service> ...`. Les deux entrent dans le même conteneur.
+**Noms des conteneurs.** Compose les nomme `<projet>-<service>-<numéro>`. Le projet est fixé à `thermoflux` dans le fichier compose, donc les noms sont `thermoflux-mosquitto-1` et `thermoflux-postgres-1`, identiques sur Windows et sur la Dedibox. `docker ps` les affiche. Les commandes de ce guide utilisent `docker exec <conteneur>` ; avec Compose, l'équivalent est `docker compose exec <service> ...`. Les deux entrent dans le même conteneur.
 
 Mosquitto exige un identifiant et un mot de passe : l'accès anonyme est refusé. Au démarrage, [mosquitto/init.sh](mosquitto/init.sh) crée les comptes `simulateur` et `ingestion` à partir des mots de passe du `.env`. Les droits de chaque compte sont dans [mosquitto/acl](mosquitto/acl).
 
@@ -152,8 +161,8 @@ Copier la ligne affichée (`scrypt:65536:8:2:...`) dans `.env`, après `WEB_PASS
 
 Générer la clé de signature des cookies et la copier dans `.env`, après `SECRET_KEY=` :
 
-```import
-docker run --rm thermoflux-web python -c " secrets; print(secrets.token_hex(32))"
+```
+docker run --rm thermoflux-web python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 Recharger le `.env` dans le terminal (le bloc de l'étape 5), puis lancer le web :
@@ -219,19 +228,64 @@ Tests de robustesse :
 
 ```
 docker rm -f web ingestion machine_01 machine_02
-docker compose -f docker-compose.dev.yml down        # garde les données Postgres
-docker compose -f docker-compose.dev.yml down -v     # supprime aussi le volume : base vide
+docker compose down        # garde les données Postgres
+docker compose down -v     # supprime aussi le volume : base vide
 ```
 
-## 11. Déployer sur la Dedibox
+Supprime les conteneurs lancés à la main **avant** `docker compose down` : tant qu'ils sont branchés sur le réseau, Compose ne peut pas le supprimer (« Resource is still in use »).
+
+## 11. Voie Compose : tout lancer d'une commande
+
+Après la préparation des sections 1 et 2, et une fois `WEB_PASSWORD_HASH` et `SECRET_KEY` renseignés dans `.env` (section 8, partie « Générer le mot de passe haché » : elle utilise l'image `thermoflux-web`, donc `docker build -t thermoflux-web ./web` d'abord si elle n'existe pas) :
+
+```
+docker compose up -d --build --wait
+```
+
+Compose construit les quatre images, puis démarre dans l'ordre déclaré par `depends_on` : Postgres et Mosquitto sains, puis `migrate` (qui s'arrête avec le code 0), puis `ingestion` et `web`, et enfin les 10 simulateurs. Ce que tu faisais à la main est écrit dans [docker-compose.yml](docker-compose.yml) :
+
+| À la main | Dans le compose |
+|---|---|
+| `docker build -t thermoflux-x ./x` | `build: ./x` et `image: thermoflux-x` |
+| `docker run --network thermoflux-dev` | réseau créé et rejoint automatiquement |
+| `-e VAR=...` avec le `.env` chargé à la main | `environment:` avec `${VAR}` lu dans `.env` |
+| attendre que Postgres soit prêt | `depends_on` avec `condition: service_healthy` |
+| lancer `migrate` avant l'ingestion | `condition: service_completed_successfully` |
+| 10 `docker run` presque identiques | une ancre YAML `x-simulateur` et 10 services de deux lignes (la syntaxe `&`, `*` et `<<` est expliquée dans [DOCKER-MEMO.md](DOCKER-MEMO.md), section « YAML du compose ») |
+| `-p 127.0.0.1:8000:8000` | `ports:` |
+
+Commandes courantes :
+
+```
+docker compose ps -a                     # état de tous les services (migrate apparaît « Exited (0) » : normal)
+docker compose logs -f ingestion         # logs d'un service
+docker compose stop simulateur_04        # une machine passe « Hors ligne » sur la page web
+docker compose up -d --build ingestion   # reconstruire et relancer un seul service après une modification
+docker compose down                      # tout arrêter, garde les données ; `down -v` efface aussi la base
+```
+
+Les conteneurs portent les noms `thermoflux-<service>-1` (par exemple `thermoflux-ingestion-1`, `thermoflux-simulateur_04-1`).
+
+### Passer d'une voie à l'autre
+
+Les deux voies utilisent le même réseau, le même volume et les mêmes ports : **n'en fais tourner qu'une à la fois.** Sinon, deux ingestions inséreraient chaque mesure en double (voir le piège du cadrage sur les instances d'ingestion), et le port 8000 serait pris deux fois.
+
+| Tu es en voie | Pour passer à l'autre |
+|---|---|
+| manuelle | `docker rm -f web ingestion machine_01 machine_02 ...` puis `docker compose up -d --build --wait` |
+| Compose | `docker compose down`, puis `docker compose up -d --wait postgres mosquitto` (section 3), puis les `docker run` des sections 5 à 8 |
+
+L'historique est conservé dans les deux sens, car le volume Postgres est le même (`thermoflux_pgdata`).
+
+## 12. Déployer sur la Dedibox
 
 Le principe : Git fait le lien entre les deux machines.
 
 1. Sur Windows : `git push`.
 2. Sur la Dedibox : `git clone` (la première fois) ou `git pull`, puis recréer le `.env` (il n'est pas dans Git).
-3. Reprendre les étapes 3 à 8 ci-dessus. Pour accéder au web depuis ton PC sans l'exposer sur Internet, utilise un tunnel SSH (`ssh -L 8000:127.0.0.1:8000 <utilisateur>@<dedibox>`) plutôt que d'ouvrir le port. Les ports hôte par défaut (5433 et 1884) sont libres à changer via `.env` si besoin.
+3. Lancer avec la voie Compose (section 11) : `docker compose up -d --build --wait`. Pour accéder au web depuis ton PC sans l'exposer sur Internet, utilise un tunnel SSH (`ssh -L 8000:127.0.0.1:8000 <utilisateur>@<dedibox>`) plutôt que d'ouvrir le port. Les ports hôte par défaut (5433, 1884 et 8000) se changent via `.env` si besoin (`POSTGRES_HOST_PORT`, `MQTT_HOST_PORT`, `WEB_HOST_PORT`).
 
-Le déploiement en une seule commande (`docker compose up -d`) sera fourni à l'étape 2.
+Après un `git pull` qui modifie le code d'un service : `docker compose up -d --build` reconstruit et recrée seulement ce qui a changé.
 
 **Deux copies du dépôt sur une même machine Docker (par exemple un dossier de développement et un clone de test) :**
 - Chaque copie a **son propre `.env`**, qui n'est pas dans Git. Les mots de passe peuvent donc différer, c'est normal.
@@ -254,11 +308,15 @@ Le déploiement en une seule commande (`docker compose up -d`) sera fourni à l'
 | Log « Connexion refusee par le broker : Not authorized » | `MQTT_USERNAME` / `MQTT_PASSWORD` absents ou faux | utiliser `simulateur` ou `ingestion` avec le mot de passe du `.env` ; le client réessaie sans planter, et le message « En attente du broker... » qui suit est trompeur dans ce cas |
 | Mesures absentes alors que tout est « connecté » | un compte utilisé pour autre chose que son rôle (ex. `ingestion` qui publie) : le broker ignore silencieusement | respecter les droits de [mosquitto/acl](mosquitto/acl) |
 | Mosquitto redémarre en boucle | variable `MQTT_*_PASSWORD` manquante dans `.env` | voir `docker logs thermoflux-mosquitto-1` |
-| Modification de mot de passe sans effet | le fichier `passwd` est généré au démarrage | `docker compose -f docker-compose.dev.yml up -d --force-recreate mosquitto` |
+| Modification de mot de passe sans effet | le fichier `passwd` est généré au démarrage | `docker compose up -d --force-recreate mosquitto` |
 | Base vide après `down` puis `up` | `down -v` a supprimé le volume | utiliser `down` sans `-v` |
 | `password authentication failed for user "thermoflux"` | le mot de passe du `.env` a changé après la création du volume : Postgres garde celui de l'initialisation | remettre l'ancien mot de passe dans `.env`, ou repartir d'une base vide (`down -v`) |
 | Web : `Variable d'environnement manquante` ou `SECRET_KEY trop courte` | `WEB_USER`, `WEB_PASSWORD_HASH` ou `SECRET_KEY` absents de `.env`, ou `.env` non rechargé dans ce terminal | les renseigner (étape 8), recharger le `.env`, relancer ; voir `docker logs web` |
 | Connexion web refusée avec le bon mot de passe | hash mal copié, ou hash calculé pour un autre mot de passe | recalculer avec `hash_password.py` et recopier la ligne entière dans `.env` |
 | `/health` répond 503 | le web ne joint pas la base : mauvais mot de passe, ou Postgres arrêté | `docker logs web` donne la cause exacte |
 | Page web affichée mais tableau vide | aucune mesure en base : ingestion ou simulateurs arrêtés | `docker ps`, puis `docker logs ingestion` |
-| `port is already allocated` sur 8000 | un autre programme utilise ce port | changer le premier nombre de `-p`, par exemple `8001:8000` |
+| `port is already allocated` sur 8000 | un autre programme utilise ce port (ou la voie manuelle tourne encore) | changer le premier nombre de `-p` (par exemple `8001:8000`), ou `WEB_HOST_PORT` en voie Compose |
+| `Network thermoflux-dev Resource is still in use` au `compose down` | des conteneurs lancés à la main sont encore branchés sur le réseau | `docker rm -f` sur ces conteneurs, puis relancer `docker compose down` |
+| Mesures en double en base | la voie manuelle et la voie Compose tournent en même temps : deux ingestions | n'en garder qu'une (section 11) |
+| `compose ps` : `web` redémarre en boucle | `WEB_PASSWORD_HASH` ou `SECRET_KEY` vides dans `.env` | `docker compose logs web` le dit ; les renseigner (section 8) puis `docker compose up -d web` |
+| `compose up --wait` : `dependency failed to start` | un service dont dépendent les autres est en erreur | `docker compose ps -a` puis `docker compose logs <service>` ; `migrate` doit être `Exited (0)` |

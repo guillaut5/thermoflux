@@ -1,0 +1,139 @@
+# thermoflux : toute la chaine avec `docker compose up -d --build`.
+#
+# Ce fichier sert aussi de socle pour la voie manuelle (docker run) :
+#   docker compose up -d --wait postgres mosquitto
+# lance seulement les deux composants officiels ; on lance le reste a la main
+# (voir INSTALL.md). Les deux voies partagent le meme reseau, les memes noms
+# d'images et le meme volume : on peut passer de l'une a l'autre sans perdre
+# l'historique, mais pas les faire tourner en meme temps (voir INSTALL.md).
+name: thermoflux
+
+# --- Definition commune des 10 simulateurs (ancres YAML) ---------------------
+# Une seule image, 10 conteneurs : seul MACHINE_ID change.
+# Syntaxe YAML (pas Docker) :
+#   &nom   pose une etiquette (ancre) sur un bloc ou une valeur
+#   *nom   reutilise le bloc etiquete (alias)
+#   <<:    fusionne les cles d'un bloc dans le bloc courant ; une cle ecrite
+#          explicitement l'emporte. La fusion est superficielle : redefinir
+#          `environment` remplace tout le bloc, d'ou la 2e ancre &simulateur-env.
+# `x-...` : cle ignoree par Compose, sert a ranger un morceau reutilisable.
+# Voir le resultat developpe, sans secrets : docker compose config --no-interpolate
+x-simulateur: &simulateur
+  build: ./simulateur
+  image: thermoflux-simulateur
+  restart: unless-stopped
+  depends_on:
+    mosquitto:
+      condition: service_healthy
+  environment: &simulateur-env
+    MQTT_HOST: mosquitto
+    MQTT_USERNAME: simulateur
+    MQTT_PASSWORD: ${MQTT_SIMULATEUR_PASSWORD:?voir .env.example}
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      # 1884 cote hote : evite le conflit avec un Mosquitto deja installe sur Windows
+      - "127.0.0.1:${MQTT_HOST_PORT:-1884}:1883"
+    entrypoint: ["/bin/sh", "/mosquitto/init.sh"]
+    environment:
+      MQTT_SIMULATEUR_PASSWORD: ${MQTT_SIMULATEUR_PASSWORD:?voir .env.example}
+      MQTT_INGESTION_PASSWORD: ${MQTT_INGESTION_PASSWORD:?voir .env.example}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/init.sh:/mosquitto/init.sh:ro
+    healthcheck:
+      # L'image n'en a pas. Se connecter avec le compte simulateur prouve que le
+      # broker ecoute ET que le fichier de mots de passe a bien ete genere.
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -u simulateur -P \"$${MQTT_SIMULATEUR_PASSWORD}\" -t healthcheck/ping -m ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?voir .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?voir .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?voir .env.example}
+    ports:
+      # 5433 cote hote : evite le conflit avec un Postgres deja installe sur Windows
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Job a usage unique : applique les migrations Alembic puis s'arrete (code 0).
+  migrate:
+    build: ./db
+    image: thermoflux-migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: &database-url postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingestion:
+    build: ./ingestion
+    image: thermoflux-ingestion
+    restart: unless-stopped
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_USERNAME: ingestion
+      MQTT_PASSWORD: ${MQTT_INGESTION_PASSWORD:?voir .env.example}
+      DATABASE_URL: *database-url
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build: ./web
+    image: thermoflux-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: *database-url
+      WEB_USER: ${WEB_USER:-admin}
+      # Pas de ":?" ici : sinon meme `up postgres mosquitto` exigerait ces valeurs.
+      # Si elles manquent, le web s'arrete en le disant (docker compose logs web).
+      WEB_PASSWORD_HASH: ${WEB_PASSWORD_HASH:-}
+      SECRET_KEY: ${SECRET_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  simulateur_01: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_01 } }
+  simulateur_02: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_02 } }
+  simulateur_03: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_03 } }
+  simulateur_04: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_04 } }
+  simulateur_05: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_05 } }
+  simulateur_06: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_06 } }
+  simulateur_07: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_07 } }
+  simulateur_08: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_08 } }
+  simulateur_09: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_09 } }
+  simulateur_10: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_10 } }
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    # Nom fixe : les `docker run` de la voie manuelle utilisent --network thermoflux-dev.
+    # NETWORK_NAME ne sert qu'a faire tourner une 2e pile en parallele (tests).
+    name: ${NETWORK_NAME:-thermoflux-dev}

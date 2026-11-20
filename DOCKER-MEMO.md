@@ -80,16 +80,51 @@ Image = modèle figé. Conteneur = une exécution d'une image. Volume = données
 | `docker system prune` | arrêtés + réseaux inutilisés + images sans nom |
 | `docker system prune --volumes` | **efface aussi les volumes inutilisés** |
 
-## Compose (ce projet : `-f docker-compose.dev.yml`)
+## Compose (ce projet : fichier `docker-compose.yml`, trouvé tout seul)
 
 | Commande | Effet |
 |---|---|
-| `docker compose -f f.yml up -d --wait` | créer et démarrer, attendre « healthy » |
-| `docker compose -f f.yml ps` | état des services |
-| `docker compose -f f.yml logs -f service` | logs d'un service |
-| `docker compose -f f.yml down` | arrêter et supprimer, **garde** les volumes |
-| `docker compose -f f.yml down -v` | idem **et supprime les volumes** (base vide) |
-| `docker compose -f f.yml config` | fichier interprété (affiche les secrets en clair) |
+| `docker compose up -d --build` | tout construire, créer et démarrer |
+| `docker compose up -d --wait postgres mosquitto` | seulement ces services (le socle), attendre « healthy » |
+| `docker compose ps -a` | état des services (y compris `migrate`, terminé) |
+| `docker compose logs -f service` | logs d'un service |
+| `docker compose build service` | reconstruire une image |
+| `docker compose up -d --force-recreate service` | recréer un conteneur (après changement de config) |
+| `docker compose stop` / `start` | arrêter / relancer sans supprimer |
+| `docker compose down` | arrêter et supprimer, **garde** les volumes |
+| `docker compose down -v` | idem **et supprime les volumes** (base vide) |
+| `docker compose config --quiet` | vérifie la syntaxe (sans `--quiet`, affiche les secrets en clair) |
+
+## YAML du compose : `&`, `*`, `<<`, `${}`
+
+Ces symboles viennent de **YAML** (et de Compose pour `${}`), pas de Docker. Le YAML est développé **avant** que Compose le lise.
+
+| Symbole | Nom | Rôle | Exemple du projet |
+|---|---|---|---|
+| `&nom` | ancre | étiquette un bloc ou une valeur | `x-simulateur: &simulateur` |
+| `*nom` | alias | réutilise le bloc étiqueté | `*database-url` |
+| `<<: *nom` | fusion | copie les clés du bloc dans le bloc courant ; une clé écrite explicitement l'emporte | `<<: *simulateur` |
+| `x-...` | extension | clé ignorée par Compose, sert à ranger un morceau réutilisable | `x-simulateur:` |
+| `{ a: 1, b: 2 }` | forme en ligne | un dessin sur une ligne (comme en JSON) | `{ <<: *simulateur, environment: {...} }` |
+| `${VAR}` | interpolation | valeur lue dans `.env` ou l'environnement | `${POSTGRES_USER}` |
+| `${VAR:-défaut}` | valeur par défaut | utilise `défaut` si absente ou vide | `${WEB_HOST_PORT:-8000}` |
+| `${VAR:?message}` | obligatoire | erreur avec `message` si absente ou vide | `${POSTGRES_PASSWORD:?voir .env.example}` |
+| `$$` | `$` littéral | évite l'interpolation (le `$` est lu dans le conteneur) | `$${POSTGRES_USER}` |
+
+La ligne d'un simulateur, développée :
+
+```yaml
+simulateur_04: { <<: *simulateur, environment: { <<: *simulateur-env, MACHINE_ID: machine_04 } }
+```
+```yaml
+simulateur_04:
+  <<: *simulateur          # copie build, image, restart, depends_on, environment
+  environment:             # mais on redéfinit environment : la fusion est superficielle,
+    <<: *simulateur-env    # il remplace l'autre en entier ; on recopie donc les 3 variables communes
+    MACHINE_ID: machine_04 # et on ajoute celle de cette machine
+```
+
+Une ancre doit être définie **avant** son alias (lecture de haut en bas). Voir le résultat développé : `docker compose config --no-interpolate` (sans cette option, les mots de passe s'affichent en clair).
 
 ## Pièges fréquents
 
