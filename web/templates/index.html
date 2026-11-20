@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>thermoflux — températures</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f4f5f7; color: #1c1e21; margin: 0; padding: 1.5rem; }
+    header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .5rem; }
+    h1 { margin: 0; font-size: 1.4rem; }
+    #maj { font-size: .85rem; opacity: .75; }
+    #erreur { color: #b3261e; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; max-width: 48rem; margin-top: 1rem; background: #fff; }
+    th, td { padding: .5rem .8rem; text-align: left; border-bottom: 1px solid #ddd; }
+    td.num { font-variant-numeric: tabular-nums; }
+    .pastille { display: inline-block; padding: .1rem .6rem; border-radius: 999px; font-size: .85rem; color: #fff; }
+    .ok .pastille { background: #2e7d32; }
+    .chaud .pastille { background: #e08600; }
+    .alerte .pastille { background: #c62828; }
+    .hors_ligne { color: #888; }
+    .hors_ligne .pastille { background: #888; }
+    button { padding: .4rem .8rem; cursor: pointer; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #15171a; color: #e6e6e6; }
+      table { background: #1f2226; }
+      th, td { border-bottom-color: #333; }
+      #erreur { color: #f2b8b5; }
+      button { background: #2a2e33; color: inherit; border: 1px solid #444; border-radius: 4px; }
+      .hors_ligne { color: #777; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>thermoflux — températures</h1>
+    <form method="post" action="/logout"><button type="submit">Se déconnecter</button></form>
+  </header>
+  <p><span id="maj">Chargement…</span> <span id="erreur" role="alert"></span></p>
+  <table>
+    <thead>
+      <tr><th>Machine</th><th>Température</th><th>Heure de la mesure</th><th>Âge</th><th>État</th></tr>
+    </thead>
+    <tbody id="corps"></tbody>
+  </table>
+
+  <script>
+    const LIBELLES = { ok: "OK", chaud: "Chaud", alerte: "Alerte", hors_ligne: "Hors ligne" };
+
+    function formatAge(s) {
+      if (s < 60) return Math.round(s) + " s";
+      if (s < 3600) return Math.round(s / 60) + " min";
+      return Math.round(s / 3600) + " h";
+    }
+
+    function cellule(texte, classe) {
+      const td = document.createElement("td");
+      td.textContent = texte;  // textContent : machine_id vient du reseau, jamais en innerHTML
+      if (classe) td.className = classe;
+      return td;
+    }
+
+    function afficher(machines) {
+      const corps = document.getElementById("corps");
+      corps.replaceChildren();
+      for (const m of machines) {
+        const tr = document.createElement("tr");
+        tr.className = m.statut;
+        tr.append(
+          cellule(m.machine_id),
+          cellule(m.temperature_c.toFixed(1) + " °C", "num"),
+          // UTC en base et dans l'API ; conversion en heure locale ici seulement
+          cellule(new Date(m.ts).toLocaleTimeString(), "num"),
+          cellule(formatAge(m.age_s), "num")
+        );
+        const etat = document.createElement("td");
+        const pastille = document.createElement("span");
+        pastille.className = "pastille";
+        pastille.textContent = LIBELLES[m.statut] || m.statut;
+        etat.append(pastille);
+        tr.append(etat);
+        corps.append(tr);
+      }
+    }
+
+    async function rafraichir() {
+      const erreur = document.getElementById("erreur");
+      try {
+        const r = await fetch("/api/dernieres", { credentials: "same-origin" });
+        if (r.status === 401) { location.href = "/login"; return; }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        afficher(await r.json());
+        document.getElementById("maj").textContent = "Mis à jour à " + new Date().toLocaleTimeString();
+        erreur.textContent = "";
+      } catch (e) {
+        erreur.textContent = "Données indisponibles (" + e.message + ")";
+      }
+    }
+
+    rafraichir();
+    setInterval(rafraichir, 5000);
+  </script>
+</body>
+</html>
