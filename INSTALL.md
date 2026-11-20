@@ -152,8 +152,8 @@ Copier la ligne affichée (`scrypt:65536:8:2:...`) dans `.env`, après `WEB_PASS
 
 Générer la clé de signature des cookies et la copier dans `.env`, après `SECRET_KEY=` :
 
-```
-docker run --rm thermoflux-web python -c "import secrets; print(secrets.token_hex(32))"
+```import
+docker run --rm thermoflux-web python -c " secrets; print(secrets.token_hex(32))"
 ```
 
 Recharger le `.env` dans le terminal (le bloc de l'étape 5), puis lancer le web :
